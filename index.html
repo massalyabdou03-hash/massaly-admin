@@ -1,0 +1,211 @@
+<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+<meta name="robots" content="noindex, nofollow" />
+<meta name="theme-color" content="#0b1220" />
+<title>Massaly Admin</title>
+<style>
+  :root{
+    --bg:#0b1220; --card:#121b2e; --card-2:#18233a; --border:#24314d;
+    --text:#e8edf7; --muted:#93a1bd; --accent:#4f8cff; --ok:#22c55e; --ok-dim:rgba(34,197,94,.14);
+    --ko:#f59e0b; --ko-dim:rgba(245,158,11,.14); --err:#ef4444; --radius:16px;
+  }
+  *{box-sizing:border-box}
+  body{margin:0; background:var(--bg); color:var(--text); font:15px/1.45 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;
+       padding:max(16px,env(safe-area-inset-top)) 16px 32px;}
+  .wrap{max-width:720px; margin:0 auto}
+  header{display:flex; align-items:center; justify-content:space-between; gap:12px; margin-bottom:20px}
+  h1{font-size:22px; margin:0; letter-spacing:-.02em}
+  h1 small{display:block; font-size:13px; font-weight:500; color:var(--muted)}
+  .card{background:var(--card); border:1px solid var(--border); border-radius:var(--radius); padding:18px; margin-bottom:16px}
+  label{display:block; font-size:13px; color:var(--muted); margin:12px 0 6px}
+  input{width:100%; padding:12px 14px; border-radius:12px; border:1px solid var(--border); background:var(--card-2); color:var(--text); font-size:16px}
+  button{font:inherit; cursor:pointer; border-radius:12px; border:1px solid var(--border); background:var(--card-2); color:var(--text); padding:10px 14px}
+  button.primary{background:var(--accent); border-color:var(--accent); color:#fff; font-weight:600; width:100%; padding:13px; margin-top:16px}
+  button:disabled{opacity:.55; cursor:default}
+  .msg{margin-top:12px; font-size:14px; color:var(--err)}
+  .app-head{display:flex; align-items:center; justify-content:space-between; gap:10px; margin-bottom:12px}
+  .app-head h2{font-size:17px; margin:0}
+  .badge{font-size:12px; font-weight:600; padding:4px 10px; border-radius:999px; white-space:nowrap}
+  .badge.ok{background:var(--ok-dim); color:var(--ok)}
+  .badge.ko{background:var(--ko-dim); color:var(--ko)}
+  .badge.err{background:rgba(239,68,68,.14); color:var(--err)}
+  .row{display:flex; align-items:center; justify-content:space-between; gap:10px; padding:10px 0; border-top:1px solid var(--border)}
+  .row .m{font-weight:600; text-transform:capitalize}
+  .row .d{font-size:12px; color:var(--muted)}
+  .row.current .m::after{content:" · ce mois"; color:var(--accent); font-weight:500; text-transform:none; font-size:13px}
+  .row button.pay{background:var(--ok); border-color:var(--ok); color:#06240f; font-weight:700}
+  .row button.undo{font-size:13px; color:var(--muted)}
+  .note{font-size:13px; color:var(--muted)}
+  .hidden{display:none}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <h1>Massaly Admin<small>Abonnements base de données</small></h1>
+    <button id="logout" class="hidden">Déconnexion</button>
+  </header>
+
+  <!-- Connexion -->
+  <form id="login" class="card">
+    <p class="note" style="margin:0">Connecte-toi avec ton compte admin (même email et mot de passe dans chaque app).</p>
+    <label for="email">Email</label>
+    <input id="email" type="email" autocomplete="username" required />
+    <label for="pwd">Mot de passe</label>
+    <input id="pwd" type="password" autocomplete="current-password" required />
+    <button class="primary" id="go">Se connecter aux apps</button>
+    <p class="msg" id="loginMsg"></p>
+  </form>
+
+  <div id="apps"></div>
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.45.4/dist/umd/supabase.min.js"></script>
+<script>
+// =============================================================================
+// CONFIG — une ligne par app cliente. Clé "publishable"/"anon" uniquement
+// (Supabase > Project Settings > API). JAMAIS la clé service_role.
+// =============================================================================
+const APPS = [
+  {
+    id: "sylla",
+    nom: "Sylla Automobile",
+    url: "https://firytchonwlvthschvow.supabase.co",
+    cle: "sb_publishable_Idtn_tErn8sJxXNC3WEAkA_9vGfT31L",
+  },
+  {
+    id: "salame",
+    nom: "Salame Hôtel",
+    url: "https://zbvmggynndfstwjeppfn.supabase.co",
+    cle: "sb_publishable_cGe0CcbiMWNrZ-r6V6eUDA_NeUviE8G",
+  },
+];
+const MONTANT = 11500;
+const NB_MOIS_PASSES = 5; // mois affichés avant le mois en cours (+ le mois prochain)
+
+// -----------------------------------------------------------------------------
+const $ = (s) => document.querySelector(s);
+const clients = {};
+APPS.filter(a => a.url && a.cle).forEach(a => {
+  clients[a.id] = window.supabase.createClient(a.url, a.cle, {
+    auth: { storageKey: "massaly-admin-" + a.id, persistSession: true },
+  });
+});
+
+const fmtMois = (m) => {
+  const [y, mo] = m.split("-").map(Number);
+  return new Date(y, mo - 1, 1).toLocaleDateString("fr-FR", { month: "long", year: "numeric" });
+};
+const cleMois = (d) => d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0");
+function listeMois() {
+  const now = new Date(), out = [];
+  for (let i = 1; i >= -NB_MOIS_PASSES; i--) out.push(cleMois(new Date(now.getFullYear(), now.getMonth() + i, 1)));
+  return out;
+}
+const esc = (t) => String(t).replace(/[&<>"]/g, c => ({ "&":"&amp;", "<":"&lt;", ">":"&gt;", '"':"&quot;" }[c]));
+
+async function connecte(id) {
+  const c = clients[id];
+  if (!c) return false;
+  const { data } = await c.auth.getSession();
+  return !!data.session;
+}
+
+async function afficherApp(app) {
+  let box = document.getElementById("app-" + app.id);
+  if (!box) {
+    box = document.createElement("section");
+    box.className = "card"; box.id = "app-" + app.id;
+    $("#apps").appendChild(box);
+  }
+  const head = (badge) => `<div class="app-head"><h2>${esc(app.nom)}</h2>${badge}</div>`;
+
+  if (!clients[app.id]) {
+    box.innerHTML = head('<span class="badge err">À configurer</span>') +
+      '<p class="note">Ajoute l\'URL et la clé de ce projet dans la CONFIG en haut du fichier.</p>';
+    return;
+  }
+  const c = clients[app.id];
+  if (!(await connecte(app.id))) {
+    box.innerHTML = head('<span class="badge err">Non connecté</span>') +
+      '<p class="note">Connexion refusée sur cette app : vérifie que ton compte admin y existe avec le même mot de passe.</p>';
+    return;
+  }
+
+  const [{ data: estAdmin }, { data: lignes, error }] = await Promise.all([
+    c.rpc("est_admin_abonnement"),
+    c.from("abonnement_bdd").select("mois, paye_le").order("mois", { ascending: false }),
+  ]);
+  if (error) {
+    box.innerHTML = head('<span class="badge err">Erreur</span>') +
+      '<p class="note">Table <code>abonnement_bdd</code> introuvable : lance le script SQL dans ce projet.<br>' + esc(error.message) + '</p>';
+    return;
+  }
+
+  const payes = new Map((lignes || []).map(l => [l.mois, l.paye_le]));
+  const actuel = cleMois(new Date());
+  const badge = payes.has(actuel)
+    ? '<span class="badge ok">✓ Mois en cours payé</span>'
+    : '<span class="badge ko">Mois en cours non payé</span>';
+
+  let html = head(badge);
+  if (!estAdmin) html += '<p class="msg">Ce compte n\'est pas admin : connecte-toi avec massalyabdou03@gmail.com (email confirmé).</p>';
+
+  for (const m of listeMois()) {
+    const p = payes.get(m);
+    html += `<div class="row${m === actuel ? " current" : ""}">
+      <div><div class="m">${fmtMois(m)}</div>
+        <div class="d">${p ? "Payé le " + new Date(p).toLocaleDateString("fr-FR") : "Non payé"}</div></div>
+      ${p
+        ? `<button class="undo" data-app="${app.id}" data-mois="${m}" data-act="annuler" ${estAdmin ? "" : "disabled"}>Annuler</button>`
+        : `<button class="pay" data-app="${app.id}" data-mois="${m}" data-act="payer" ${estAdmin ? "" : "disabled"}>Marquer payé</button>`}
+    </div>`;
+  }
+  box.innerHTML = html;
+}
+
+async function toutAfficher() {
+  const auMoinsUne = (await Promise.all(Object.keys(clients).map(connecte))).some(Boolean);
+  $("#login").classList.toggle("hidden", auMoinsUne);
+  $("#logout").classList.toggle("hidden", !auMoinsUne);
+  if (!auMoinsUne) { $("#apps").innerHTML = ""; return; }
+  await Promise.all(APPS.map(afficherApp));
+}
+
+$("#login").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  $("#go").disabled = true; $("#loginMsg").textContent = "";
+  const email = $("#email").value.trim(), password = $("#pwd").value;
+  const res = await Promise.all(Object.entries(clients).map(([, c]) =>
+    c.auth.signInWithPassword({ email, password }).catch(err => ({ error: err }))));
+  $("#go").disabled = false;
+  if (res.every(r => r.error)) $("#loginMsg").textContent = "Connexion refusée sur toutes les apps. Vérifie l'email et le mot de passe.";
+  $("#pwd").value = "";
+  toutAfficher();
+});
+
+$("#logout").addEventListener("click", async () => {
+  await Promise.all(Object.values(clients).map(c => c.auth.signOut().catch(() => {})));
+  toutAfficher();
+});
+
+$("#apps").addEventListener("click", async (e) => {
+  const b = e.target.closest("button[data-act]");
+  if (!b) return;
+  const app = APPS.find(a => a.id === b.dataset.app), c = clients[app.id], mois = b.dataset.mois;
+  if (b.dataset.act === "annuler" && !confirm(`Annuler le paiement de ${fmtMois(mois)} pour ${app.nom} ?`)) return;
+  b.disabled = true;
+  const { error } = b.dataset.act === "payer"
+    ? await c.from("abonnement_bdd").upsert({ mois, montant: MONTANT, paye_le: new Date().toISOString() })
+    : await c.from("abonnement_bdd").delete().eq("mois", mois);
+  if (error) alert("Erreur : " + error.message);
+  afficherApp(app);
+});
+
+toutAfficher();
+</script>
+</body>
+</html>
